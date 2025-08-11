@@ -1,0 +1,275 @@
+<!-- filepath: /games/chase-game.html -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Escape! — Arrow Key Chase Game</title>
+  <style>
+    :root{--bg:#0b1221;--panel:#0f1724;--accent:#10b981;--danger:#ef4444;--muted:#94a3b8}
+    html,body{height:100%;margin:0;font-family:Inter,Segoe UI,Roboto,Arial;background:linear-gradient(180deg,#071029 0%, #071b2a 100%);color:#e6eef6}
+    .wrap{max-width:920px;margin:28px auto;padding:18px;background:rgba(255,255,255,0.02);border-radius:12px;box-shadow:0 8px 30px rgba(2,6,23,0.6)}
+    header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+    h1{font-size:20px;margin:0}
+    .controls{display:flex;gap:10px;align-items:center}
+    button{background:var(--panel);color:var(--accent);border:1px solid rgba(255,255,255,0.04);padding:8px 12px;border-radius:8px;cursor:pointer}
+    button.secondary{background:transparent;color:var(--muted);border:1px dashed rgba(255,255,255,0.04)}
+    .hud{display:flex;gap:18px;align-items:center}
+    .panel{background:linear-gradient(180deg,rgba(255,255,255,0.02),transparent);padding:8px 10px;border-radius:8px;border:1px solid rgba(255,255,255,0.02);font-size:14px}
+    .game-area{display:flex;gap:18px}
+    canvas{background:linear-gradient(180deg,#071422,#072231);border-radius:10px;border:1px solid rgba(255,255,255,0.03);flex:1}
+    .info{width:220px}
+    .info h2{margin:6px 0 8px 0;font-size:15px}
+    .stat{display:flex;justify-content:space-between;padding:8px 10px;background:rgba(255,255,255,0.02);border-radius:8px;margin-bottom:8px}
+    .small{font-size:12px;color:var(--muted)}
+    .big{font-weight:700;font-size:18px}
+    .footer{margin-top:12px;color:var(--muted);font-size:13px}
+
+    /* responsive */
+    @media (max-width:760px){.game-area{flex-direction:column}.info{width:100%}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Escape! — Arrow keys to move (Up/Down/Left/Right)</h1>
+      <div class="controls">
+        <div class="hud">
+          <div class="panel">Time: <span id="time">0:00</span></div>
+          <div class="panel">Points: <span id="points">0</span></div>
+        </div>
+        <button id="start">Start</button>
+        <button id="reset" class="secondary">Reset</button>
+      </div>
+    </header>
+
+    <div class="game-area">
+      <canvas id="game" width="700" height="420" tabindex="0"></canvas>
+
+      <div class="info">
+        <h2>Status</h2>
+        <div class="stat"><div class="small">Game</div><div id="status" class="big">Idle</div></div>
+        <div class="stat"><div class="small">You (green)</div><div class="small">Enemy (red)</div></div>
+        <div style="height:10px"></div>
+        <div class="small">Survive for <strong>3 minutes (180s)</strong> to win automatically. Your points increase while you survive.</div>
+        <div class="footer">Tip: hold arrow keys to move faster. The enemy homes in on your position.</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  // Minimal comments: explain 'why' for non-obvious choices.
+  // Why: game state and timing are centralized for easier control and reset.
+  (function(){
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const startBtn = document.getElementById('start');
+    const resetBtn = document.getElementById('reset');
+    const timeEl = document.getElementById('time');
+    const pointsEl = document.getElementById('points');
+    const statusEl = document.getElementById('status');
+
+    const W = canvas.width, H = canvas.height;
+
+    const PLAYER_SIZE = 22;
+    const ENEMY_SIZE = 26;
+    const PLAYER_SPEED = 2.6; // base speed
+    const SPEED_BOOST = 1.5; // when holding keys
+    const ENEMY_SPEED = 1.55; // enemy base pursuit speed
+
+    let state = {
+      running:false,
+      startTime:0,
+      elapsed:0,
+      points:0,
+      player:{x:80,y:80,vx:0,vy:0},
+      enemy:{x:W-100,y:H-100},
+      keys:{up:false,down:false,left:false,right:false},
+      lastFrame:0,
+      gameOver:false
+    };
+
+    function resetState(){
+      state.running = false; state.gameOver = false;
+      state.startTime = 0; state.elapsed = 0; state.points = 0;
+      state.player.x = 80; state.player.y = 80; state.player.vx = 0; state.player.vy = 0;
+      state.enemy.x = W-100; state.enemy.y = H-100;
+      updateHUD();
+      statusEl.textContent = 'Idle';
+      draw();
+    }
+
+    function formatTime(s){
+      const mm = Math.floor(s/60); const ss = Math.floor(s%60).toString().padStart(2,'0');
+      return mm+':'+ss;
+    }
+
+    function updateHUD(){
+      timeEl.textContent = formatTime(state.elapsed);
+      pointsEl.textContent = Math.floor(state.points);
+    }
+
+    function startGame(){
+      if(state.running) return;
+      state.running = true; state.gameOver = false;
+      state.startTime = performance.now();
+      state.lastFrame = performance.now();
+      statusEl.textContent = 'Playing';
+      canvas.focus();
+      requestAnimationFrame(loop);
+    }
+
+    function endGame(won=false){
+      state.running = false; state.gameOver = true;
+      statusEl.textContent = won ? 'You Win!' : 'Caught!';
+      // draw final frame with message
+      draw();
+      ctx.fillStyle = 'rgba(2,6,23,0.65)';
+      ctx.fillRect(0,0,W,H);
+      ctx.fillStyle = won ? 'rgba(16,185,129,0.95)' : 'rgba(239,68,68,0.95)';
+      ctx.font = '28px system-ui,Segoe UI,Roboto,Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText(won ? 'Congratulations — You survived 3 minutes!' : 'Game Over — You were caught!', W/2, H/2 - 10);
+      ctx.font = '16px system-ui,Segoe UI';
+      ctx.fillText('Points: ' + Math.floor(state.points), W/2, H/2 + 24);
+    }
+
+    function loop(now){
+      if(!state.running) return;
+      const dt = Math.min(40, now - state.lastFrame); // cap dt for stability (ms)
+      state.lastFrame = now;
+      state.elapsed = (now - state.startTime)/1000;
+
+      // update points — points accumulate with time survived
+      state.points += dt/1000 * 10; // 10 points per second
+
+      // Player movement from keys
+      let speed = PLAYER_SPEED;
+      if((state.keys.up||state.keys.down||state.keys.left||state.keys.right) && (state.keys.up+state.keys.down+state.keys.left+state.keys.right >= 1)){
+        // holding at least one key -> boost slightly
+        speed *= SPEED_BOOST;
+      }
+      let vx = 0, vy = 0;
+      if(state.keys.left) vx -= speed;
+      if(state.keys.right) vx += speed;
+      if(state.keys.up) vy -= speed;
+      if(state.keys.down) vy += speed;
+
+      // normalize diagonal speed
+      if(vx !== 0 && vy !== 0){ vx *= 0.7071; vy *= 0.7071; }
+
+      state.player.x += vx * (dt/16.66);
+      state.player.y += vy * (dt/16.66);
+
+      // clamp to canvas
+      state.player.x = Math.max(PLAYER_SIZE/2, Math.min(W-PLAYER_SIZE/2, state.player.x));
+      state.player.y = Math.max(PLAYER_SIZE/2, Math.min(H-PLAYER_SIZE/2, state.player.y));
+
+      // Enemy simple pursuit with slight smoothing
+      const ex = state.enemy.x, ey = state.enemy.y;
+      const dx = state.player.x - ex, dy = state.player.y - ey;
+      const dist = Math.hypot(dx,dy) || 1;
+      // enemy speed increases slowly as time passes (small ramp)
+      const enemySpeedNow = ENEMY_SPEED + Math.min(1.4, state.elapsed/60);
+      // move enemy toward player
+      state.enemy.x += (dx/dist) * enemySpeedNow * (dt/16.66);
+      state.enemy.y += (dy/dist) * enemySpeedNow * (dt/16.66);
+
+      // Collision detection (circle approximations)
+      const combined = (PLAYER_SIZE/2) + (ENEMY_SIZE/2) - 2; // small overlap tolerance
+      if(Math.hypot(state.player.x - state.enemy.x, state.player.y - state.enemy.y) < combined){
+        endGame(false);
+        updateHUD();
+        return;
+      }
+
+      // Win condition: survive 180s (3 minutes)
+      if(state.elapsed >= 180){
+        endGame(true);
+        updateHUD();
+        return;
+      }
+
+      updateHUD();
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    function draw(){
+      // background
+      ctx.clearRect(0,0,W,H);
+      // subtle grid
+      ctx.strokeStyle = 'rgba(255,255,255,0.02)';
+      ctx.lineWidth = 1;
+      for(let gx=0;gx<W;gx+=40){ctx.beginPath();ctx.moveTo(gx,0);ctx.lineTo(gx,H);ctx.stroke();}
+      for(let gy=0;gy<H;gy+=40){ctx.beginPath();ctx.moveTo(0,gy);ctx.lineTo(W,gy);ctx.stroke();}
+
+      // draw enemy (red)
+      ctx.save();
+      ctx.translate(state.enemy.x, state.enemy.y);
+      ctx.fillStyle = 'rgba(239,68,68,0.95)';
+      roundRect(ctx, -ENEMY_SIZE/2, -ENEMY_SIZE/2, ENEMY_SIZE, ENEMY_SIZE, 6);
+      ctx.fill();
+      ctx.restore();
+
+      // draw player (green)
+      ctx.save();
+      ctx.translate(state.player.x, state.player.y);
+      ctx.fillStyle = 'rgba(16,185,129,0.95)';
+      roundRect(ctx, -PLAYER_SIZE/2, -PLAYER_SIZE/2, PLAYER_SIZE, PLAYER_SIZE, 5);
+      ctx.fill();
+      ctx.restore();
+
+      // top overlay: time & points
+      ctx.fillStyle = 'rgba(2,6,23,0.45)';
+      ctx.fillRect(8,8,220,44);
+      ctx.fillStyle = '#cfeff2';
+      ctx.font = '14px system-ui,Segoe UI';
+      ctx.textAlign = 'left';
+      ctx.fillText('Time: ' + formatTime(state.elapsed), 16, 28);
+      ctx.fillText('Points: ' + Math.floor(state.points), 16, 44);
+
+      // small minimap-ish indicator
+      ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+      ctx.strokeRect(W-116,8,108,64);
+      // player dot
+      ctx.fillStyle = '#10b981'; ctx.beginPath(); ctx.arc(W-60 - (W-PLAYER_SIZE)/W*10, 36, 5,0,Math.PI*2); ctx.fill();
+    }
+
+    function roundRect(ctx,x,y,w,h,r){
+      const rad = Math.min(r, w/2, h/2);
+      ctx.beginPath(); ctx.moveTo(x+rad,y);
+      ctx.arcTo(x+w,y,x+w,y+h,rad); ctx.arcTo(x+w,y+h,x,y+h,rad);
+      ctx.arcTo(x,y+h,x,y,rad); ctx.arcTo(x,y,x+w,y,rad); ctx.closePath();
+    }
+
+    // Input handling
+    window.addEventListener('keydown', (e)=>{
+      if(e.key === 'ArrowUp' || e.key === 'Up'){ state.keys.up = true; e.preventDefault(); }
+      if(e.key === 'ArrowDown' || e.key === 'Down'){ state.keys.down = true; e.preventDefault(); }
+      if(e.key === 'ArrowLeft' || e.key === 'Left'){ state.keys.left = true; e.preventDefault(); }
+      if(e.key === 'ArrowRight' || e.key === 'Right'){ state.keys.right = true; e.preventDefault(); }
+      // quick restart with R
+      if(e.key === 'r' || e.key === 'R'){ if(state.gameOver) resetState(); }
+    });
+    window.addEventListener('keyup', (e)=>{
+      if(e.key === 'ArrowUp' || e.key === 'Up'){ state.keys.up = false; }
+      if(e.key === 'ArrowDown' || e.key === 'Down'){ state.keys.down = false; }
+      if(e.key === 'ArrowLeft' || e.key === 'Left'){ state.keys.left = false; }
+      if(e.key === 'ArrowRight' || e.key === 'Right'){ state.keys.right = false; }
+    });
+
+    // allow blurring focus for mobile taps but keep keyboard events working when canvas focused
+    canvas.addEventListener('click', ()=> canvas.focus());
+
+    // Buttons
+    startBtn.addEventListener('click', ()=> startGame());
+    resetBtn.addEventListener('click', ()=> resetState());
+
+    // initialize
+    resetState();
+
+  })();
+  </script>
+</body>
+</html>
